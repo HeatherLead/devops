@@ -4,6 +4,23 @@ services:
   prom-server:
     image: prom/prometheus
     ports:
-      - 9090:9090
+      - "9090:9090"
     volumes:
       - ./prometheus-config.yml:/etc/prometheus/prometheus.yml
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prom-server
+
+  loki:
+    image: grafana/loki:latest
+    ports:
+      - "3100:3100"
+
+  zipkin:
+    image: openzipkin/zipkin
+    ports:
+      - "9411:9411"
