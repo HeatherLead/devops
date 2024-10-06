@@ -14,10 +14,12 @@ const LokiTransport = require("winston-loki");
 const app = express();
 
 const logger = createLogger({
+  level: "error",
   transports: [
     new LokiTransport({
       host: "http://127.0.0.1:3100",
       labels: { service: "my-express-service", environment: "production" },
+      level: "error",
     }),
   ],
 });
@@ -68,14 +70,6 @@ app.use(async (req, res, next) => {
     reqResTime
       .labels(req.method, req.url, res.statusCode)
       .observe(responseTime);
-
-    if (res.statusCode < 400) {
-      logger.info(`${res.statusCode}: ${req.method} ${req.url}`, {
-        route: req.url,
-        method: req.method,
-        status_code: res.statusCode,
-      });
-    }
   });
   next();
 });
