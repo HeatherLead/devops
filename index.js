@@ -5,52 +5,18 @@ const { NodeSDK } = require("@opentelemetry/sdk-node");
 const {
   getNodeAutoInstrumentations,
 } = require("@opentelemetry/auto-instrumentations-node");
+
 const { ZipkinExporter } = require("@opentelemetry/exporter-zipkin");
 const { PrometheusExporter } = require("@opentelemetry/exporter-prometheus");
 const { PeriodicExportingMetricReader } = require("@opentelemetry/sdk-metrics");
 const { trace } = require("@opentelemetry/api");
-const winston = require("winston");
-const LokiTransport = require("winston-loki");
+const logger = require("./logger");
 const morgan = require("morgan");
 
 const app = express();
 const PORT = process.env.PORT || 8000;
 
-// Logger setup with Loki (Winston + Loki Transport)
-const logger = winston.createLogger({
-  transports: [
-    new winston.transports.Console({ format: winston.format.simple() }),
-    new LokiTransport({
-      host: "http://localhost:3100", // Make sure to point to your Loki instance
-      labels: { job: "express-logs" },
-      json: true,
-    }),
-  ],
-});
-
-// Middleware for logging requests using morgan
 const morganFormat = ":method :url :status :response-time ms";
-
-app.use(
-  morgan(morganFormat, {
-    stream: {
-      write: (message) => {
-        const url = message.split(" ")[1];
-        if (url === "/metrics") {
-          return; // Skip logging for /metrics endpoint
-        }
-
-        const logObject = {
-          method: message.split(" ")[0],
-          url: url,
-          status: message.split(" ")[2],
-          responseTime: message.split(" ")[3],
-        };
-        logger.info(JSON.stringify(logObject)); // Log to Loki
-      },
-    },
-  })
-);
 
 // Prometheus setup
 promClient.collectDefaultMetrics({ register: promClient.register });
@@ -71,16 +37,44 @@ const totalReqCounter = new promClient.Counter({
 const sdk = new NodeSDK({
   traceExporter: new ZipkinExporter({
     serviceName: "my-express-service",
-    endpoint: "http://localhost:9411/api/v2/spans", // Zipkin endpoint for tracing
+    endpoint: "http://localhost:9411/api/v2/spans",
   }),
   metricReader: new PeriodicExportingMetricReader({
-    exporter: new PrometheusExporter({ port: 9464 }), // Prometheus exporter
+    exporter: new PrometheusExporter({ port: 9464 }),
     exportIntervalMillis: 1000,
   }),
   instrumentations: [getNodeAutoInstrumentations()],
 });
 
 sdk.start();
+
+// Middleware for logging requests using morgan
+app.use(
+  morgan(morganFormat, {
+    stream: {
+      write: (message) => {
+        const url = message.split(" ")[1];
+        if (url === "/metrics") {
+          return;
+        }
+
+        const logObject = {
+          method: message.split(" ")[0],
+          url: url,
+          status: message.split(" ")[2],
+          responseTime: message.split(" ")[3],
+        };
+
+        const statusCode = parseInt(logObject.status);
+        if (statusCode >= 200 && statusCode < 300) {
+          logger.infoWithDetails("Request processed", logObject);
+        } else {
+          logger.errorWithDetails("Request failed", logObject);
+        }
+      },
+    },
+  })
+);
 
 // Metrics middleware for collecting request/response time
 app.use((req, res, next) => {
@@ -98,10 +92,10 @@ app.use((req, res, next) => {
     span.end();
 
     const responseTime = parseFloat(res.get("X-Response-Time")) || 0;
-    totalReqCounter.inc(); // Increment total requests
+    totalReqCounter.inc();
     reqResTime
       .labels(req.method, req.url, res.statusCode)
-      .observe(responseTime); // Record response time metrics
+      .observe(responseTime);
   });
 
   next();
@@ -114,7 +108,7 @@ app.get("/", (req, res) => {
 
 app.get("/metrics", async (req, res) => {
   res.setHeader("Content-Type", promClient.register.contentType);
-  res.send(await promClient.register.metrics()); // Expose Prometheus metrics
+  res.send(await promClient.register.metrics());
 });
 
 app.get("/slow", async (req, res, next) => {
@@ -124,12 +118,9 @@ app.get("/slow", async (req, res, next) => {
       status: "Success",
       message: `Heavy task completed in ${timeTaken}ms`,
     });
-  } catch (error) {
-    next(error);
-  }
+  } catch (error) {}
 });
 
-// Helper functions
 async function doHeavyTask() {
   const delay = getRandomValue([
     100, 150, 200, 300, 600, 500, 1000, 1400, 2500,
@@ -158,3 +149,28 @@ function getRandomValue(arr) {
 app.listen(PORT, () => {
   logger.info(`Server is running on port ${PORT}`);
 });
+
+app.get("/error", async (req, res, next) => {
+  try {
+    const errorMessage = getRandomErrorMessage();
+    throw new Error(errorMessage);
+  } catch (error) {
+    res.status(500).json({
+      status: "Error",
+      message: error.message,
+    });
+  }
+});
+
+function getRandomErrorMessage() {
+  const errors = [
+    "DB Payment Failure",
+    "DB Server is Down",
+    "Access Denied",
+    "Not Found Error",
+    "Internal Server Error",
+    "Unauthorized Access",
+  ];
+
+  return errors[Math.floor(Math.random() * errors.length)];
+}

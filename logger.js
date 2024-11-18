@@ -1,23 +1,38 @@
 const { createLogger, format, transports } = require("winston");
-const { combine, timestamp, json, colorize, printf } = format;
+const LokiTransport = require("winston-loki");
+const { combine, timestamp, colorize, printf, json } = format;
 
-// Custom format for console logging with colors
 const consoleLogFormat = combine(
   colorize(),
+  timestamp(),
   printf(({ level, message, timestamp }) => {
-    return `${level}: ${message}`;
+    return `${timestamp} ${level}: ${message}`;
   })
 );
 
-// Create a Winston logger
+const jsonLogFormat = combine(timestamp(), json());
+
 const logger = createLogger({
   level: "info",
-  format: combine(colorize(), timestamp(), json()),
   transports: [
     new transports.Console({
+      level: "info",
       format: consoleLogFormat,
+    }),
+    new LokiTransport({
+      host: "http://localhost:3100",
+      json: true,
+      labels: { job: "my-application" },
     }),
   ],
 });
+
+logger.infoWithDetails = function (message, details) {
+  this.info(`${message} | Details: ${JSON.stringify(details)}`);
+};
+
+logger.errorWithDetails = function (message, errorDetails) {
+  this.error(`${message} | Error: ${JSON.stringify(errorDetails)}`);
+};
 
 module.exports = logger;
