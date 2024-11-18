@@ -4,12 +4,8 @@ global:
 scrape_configs:
   - job_name: "prometheus"
     static_configs:
-      - targets: ["192.168.1.9:8000"]
+      - targets: ["192.168.1.10:8000"]
 
   - job_name: "opentelemetry"
     static_configs:
-      - targets: ["192.168.1.9:9090"]
-
-  - job_name: "zipkin"
-    static_configs:
-      - targets: ["192.168.1.9:9411"]
+      - targets: ["192.168.1.10:9090"]

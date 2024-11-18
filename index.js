@@ -8,22 +8,51 @@ const {
 const { ZipkinExporter } = require("@opentelemetry/exporter-zipkin");
 const { PrometheusExporter } = require("@opentelemetry/exporter-prometheus");
 const { PeriodicExportingMetricReader } = require("@opentelemetry/sdk-metrics");
-const { createLogger } = require("winston");
+const { trace } = require("@opentelemetry/api");
+const winston = require("winston");
 const LokiTransport = require("winston-loki");
+const morgan = require("morgan");
 
 const app = express();
+const PORT = process.env.PORT || 8000;
 
-const logger = createLogger({
-  level: "error",
+// Logger setup with Loki (Winston + Loki Transport)
+const logger = winston.createLogger({
   transports: [
+    new winston.transports.Console({ format: winston.format.simple() }),
     new LokiTransport({
-      host: "http://127.0.0.1:3100",
-      labels: { service: "my-express-service", environment: "production" },
-      level: "error",
+      host: "http://localhost:3100", // Make sure to point to your Loki instance
+      labels: { job: "express-logs" },
+      json: true,
     }),
   ],
 });
 
+// Middleware for logging requests using morgan
+const morganFormat = ":method :url :status :response-time ms";
+
+app.use(
+  morgan(morganFormat, {
+    stream: {
+      write: (message) => {
+        const url = message.split(" ")[1];
+        if (url === "/metrics") {
+          return; // Skip logging for /metrics endpoint
+        }
+
+        const logObject = {
+          method: message.split(" ")[0],
+          url: url,
+          status: message.split(" ")[2],
+          responseTime: message.split(" ")[3],
+        };
+        logger.info(JSON.stringify(logObject)); // Log to Loki
+      },
+    },
+  })
+);
+
+// Prometheus setup
 promClient.collectDefaultMetrics({ register: promClient.register });
 
 const reqResTime = new promClient.Histogram({
@@ -38,13 +67,14 @@ const totalReqCounter = new promClient.Counter({
   help: "Total number of requests made",
 });
 
+// OpenTelemetry setup
 const sdk = new NodeSDK({
   traceExporter: new ZipkinExporter({
     serviceName: "my-express-service",
-    endpoint: "http://localhost:9411/api/v2/spans",
+    endpoint: "http://localhost:9411/api/v2/spans", // Zipkin endpoint for tracing
   }),
   metricReader: new PeriodicExportingMetricReader({
-    exporter: new PrometheusExporter({ port: 9464 }),
+    exporter: new PrometheusExporter({ port: 9464 }), // Prometheus exporter
     exportIntervalMillis: 1000,
   }),
   instrumentations: [getNodeAutoInstrumentations()],
@@ -52,10 +82,11 @@ const sdk = new NodeSDK({
 
 sdk.start();
 
-app.use(async (req, res, next) => {
+// Metrics middleware for collecting request/response time
+app.use((req, res, next) => {
   if (req.url === "/metrics") return next();
 
-  const tracer = require("@opentelemetry/api").trace.getTracer("default");
+  const tracer = trace.getTracer("default");
   const span = tracer.startSpan(`Processing ${req.method} ${req.url}`);
 
   res.on("finish", () => {
@@ -65,13 +96,25 @@ app.use(async (req, res, next) => {
       status_code: res.statusCode,
     });
     span.end();
+
     const responseTime = parseFloat(res.get("X-Response-Time")) || 0;
-    totalReqCounter.inc();
+    totalReqCounter.inc(); // Increment total requests
     reqResTime
       .labels(req.method, req.url, res.statusCode)
-      .observe(responseTime);
+      .observe(responseTime); // Record response time metrics
   });
+
   next();
+});
+
+// Routes
+app.get("/", (req, res) => {
+  res.send("Welcome to the Home Page!");
+});
+
+app.get("/metrics", async (req, res) => {
+  res.setHeader("Content-Type", promClient.register.contentType);
+  res.send(await promClient.register.metrics()); // Expose Prometheus metrics
 });
 
 app.get("/slow", async (req, res, next) => {
@@ -86,32 +129,7 @@ app.get("/slow", async (req, res, next) => {
   }
 });
 
-app.get("/", (req, res) => {
-  res.send("Welcome to the Home Page!");
-});
-
-app.use((err, req, res, next) => {
-  const statusCode = err.status || 500;
-  logger.error(
-    `Error ${statusCode}: ${req.method} ${req.url} - ${err.message}`,
-    {
-      route: req.url,
-      method: req.method,
-      status_code: statusCode,
-      error_message: err.message,
-    }
-  );
-  res.status(statusCode).json({
-    status: "Error",
-    error: err.message,
-  });
-});
-
-app.get("/metrics", async (req, res) => {
-  res.setHeader("Content-Type", promClient.register.contentType);
-  res.send(await promClient.register.metrics());
-});
-
+// Helper functions
 async function doHeavyTask() {
   const delay = getRandomValue([
     100, 150, 200, 300, 600, 500, 1000, 1400, 2500,
@@ -136,18 +154,7 @@ function getRandomValue(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-app.use((err, req, res, next) => {
-  const statusCode = err.status || 500;
-  logger.error(
-    `Error ${statusCode}: ${req.method} ${req.url} - ${err.message}`
-  );
-  res.status(statusCode).json({
-    status: "Error",
-    error: err.message,
-  });
-});
-
-const PORT = process.env.PORT || 8000;
+// Start server
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  logger.info(`Server is running on port ${PORT}`);
 });

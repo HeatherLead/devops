@@ -20,7 +20,3 @@ services:
     ports:
       - "3100:3100"
 
-  zipkin:
-    image: openzipkin/zipkin
-    ports:
-      - "9411:9411"
