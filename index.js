@@ -16,8 +16,6 @@ const morgan = require("morgan");
 const app = express();
 const PORT = process.env.PORT || 8000;
 
-const morganFormat = ":method :url :status :response-time ms";
-
 // Prometheus setup
 promClient.collectDefaultMetrics({ register: promClient.register });
 
@@ -48,33 +46,37 @@ const sdk = new NodeSDK({
 
 sdk.start();
 
-// Middleware for logging requests using morgan
-app.use(
-  morgan(morganFormat, {
-    stream: {
-      write: (message) => {
-        const url = message.split(" ")[1];
-        if (url === "/metrics") {
-          return;
-        }
+app.use((req, res, next) => {
+  if (req.originalUrl === "/metrics") {
+    return next();
+  }
+  const start = Date.now();
 
-        const logObject = {
-          method: message.split(" ")[0],
-          url: url,
-          status: message.split(" ")[2],
-          responseTime: message.split(" ")[3],
-        };
+  res.on("finish", () => {
+    const responseTime = Date.now() - start;
 
-        const statusCode = parseInt(logObject.status);
-        if (statusCode >= 200 && statusCode < 300) {
-          logger.infoWithDetails("Request processed", logObject);
-        } else {
-          logger.errorWithDetails("Request failed", logObject);
-        }
-      },
-    },
-  })
-);
+    const logObject = {
+      method: req.method,
+      url: req.originalUrl,
+      status: res.statusCode,
+      responseTime: responseTime,
+    };
+
+    const statusCode = res.statusCode;
+
+    if (statusCode >= 200 && statusCode < 300) {
+      logger.infoWithDetails("Request processed", logObject);
+    } else {
+      const extendedLogObject = {
+        ...logObject,
+        errorMessage: res.locals?.errorMessage || "No error message provided",
+      };
+      logger.errorWithDetails("Request failed", extendedLogObject);
+    }
+  });
+
+  next();
+});
 
 // Metrics middleware for collecting request/response time
 app.use((req, res, next) => {
@@ -155,6 +157,7 @@ app.get("/error", async (req, res, next) => {
     const errorMessage = getRandomErrorMessage();
     throw new Error(errorMessage);
   } catch (error) {
+    res.locals.errorMessage = error.message;
     res.status(500).json({
       status: "Error",
       message: error.message,
